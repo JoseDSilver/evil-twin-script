@@ -1,0 +1,23 @@
+# Arduino IDE generated files
+*.elf
+*.hex
+*.bin
+*.lock
+*.map
+build/
+.arduino/
+
+# ESP32 specific
+sdkconfig
+sdkconfig.old
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# VS Code (caso abra a pasta no VS Code para editar o README)
+.vscode/
+
+# Private credentials (SEMPRE BOM TER, por segurança)
+secrets.h
+credentials.h
